@@ -1,0 +1,10 @@
+{
+  "name": "chrome-dino-auto-player",
+  "version": "1.0.0",
+  "description": "크롬 다이노 게임을 대신 플레이하는 봇 (브라우저 콘솔용 JS + 화면 인식 파이썬)",
+  "private": true,
+  "scripts": {
+    "test": "node --test js/test/*.test.js"
+  },
+  "license": "MIT"
+}

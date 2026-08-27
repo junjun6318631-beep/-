@@ -116,6 +116,25 @@
     return true;
   }
 
+  /** 공룡 충돌 박스 중 가장 아래쪽 (점프해서 올라서는 높이 계산용) */
+  function dinoBoxBottom(snap) {
+    var boxes = snap.boxes.running;
+    var lowest = 0;
+    for (var i = 0; i < boxes.length; i++) {
+      lowest = Math.max(lowest, boxes[i].y + boxes[i].h);
+    }
+    return lowest + 1;
+  }
+
+  /** 장애물 충돌 박스 중 가장 위쪽 */
+  function obstacleTop(obstacle) {
+    var top = Infinity;
+    for (var i = 0; i < obstacle.boxes.length; i++) {
+      top = Math.min(top, obstacle.y + 1 + obstacle.boxes[i].y);
+    }
+    return top === Infinity ? obstacle.y + 1 : top;
+  }
+
   // ---------------------------------------------------------------- 물리 예측
 
   function startJump(dino, k, speed) {
@@ -141,6 +160,28 @@
       dino.speedDrop = false;
       dino.vel = 0;
     }
+  }
+
+  /** 땅에서 지금 뛰면 몇 프레임 뒤에 이 장애물 위로 올라서는가 */
+  function framesToClear(snap, obstacle, speed) {
+    var k = snap.k;
+    var dino = { y: k.groundY, vel: 0, jumping: false, speedDrop: false,
+                 reachedMinHeight: false, ducking: false };
+    startJump(dino, k, speed);
+    var bottom = dinoBoxBottom(snap);
+    var top = obstacleTop(obstacle);
+    for (var f = 1; f < 40; f++) {
+      stepDino(dino, k);
+      if (dino.y + bottom < top) return f;
+      if (!dino.jumping) break;
+    }
+    return 40;
+  }
+
+  /** 땅에 내려선 지금, 이 장애물을 다시 뛰어넘을 시간이 남아 있는가 */
+  function canStillReact(snap, obstacle, speed, extra) {
+    var distance = obstacle.x - (snap.dino.x + snap.dino.w);
+    return distance >= framesToClear(snap, obstacle, speed) * speed + extra;
   }
 
   function obstacleStep(speed, offset) {
@@ -195,19 +236,14 @@
     var verify = cfg.lookahead !== false &&
       (plan.jumpAt !== null || plan.dropAt !== null || snap.dino.jumping);
     var phase = 0;
+    var phase2Mode = '';
     var wasEarly = false;
-    var autoJump = false;
     var autoDuck = false;
 
     for (var f = 0; f < cfg.horizonFrames; f++) {
       if (plan.jumpAt === f && !dino.jumping && !dino.ducking) {
         startJump(dino, k, speed);
         jumpStarted = true;
-      }
-      if (autoJump && !dino.jumping && !dino.ducking) {
-        startJump(dino, k, speed);          // 착지하자마자 대응
-        jumpStarted = true;
-        autoJump = false;
       }
       if (autoDuck && !dino.jumping) dino.ducking = true;
       // Trex.setSpeedDrop(): 아래키를 누르면 속도를 1로 두고 3배로 낙하한다.
@@ -228,12 +264,21 @@
       var passed = target.x + target.w < snap.dino.x;
       // 목표가 도착하기 전에 착지했다 = 이 점프로는 목표를 처리하지 못한다.
       var landedEarly = jumpStarted && !dino.jumping && target.x > dinoRight;
-      if (!passed && !landedEarly) continue;
 
       if (phase === 1) {
-        // 확인 단계에서 일찍 착지했다는 건 여유가 있다는 뜻이다.
-        return { outcome: wasEarly ? OUTCOME.EARLY : OUTCOME.CLEAR, frames: f };
+        var ok = { outcome: wasEarly ? OUTCOME.EARLY : OUTCOME.CLEAR, frames: f };
+        if (passed) return ok;                      // 확인 단계 목표까지 넘겼다
+        if (phase2Mode === 'jump' && !dino.jumping) {
+          // 땅에 내려섰다 — 이 장애물을 다시 뛰어넘을 시간이 남았는가
+          return canStillReact(snap, target, speed, mx) ? ok
+            : { outcome: OUTCOME.CRASH, frames: f };
+        }
+        if (landedEarly) return ok;                 // 여유 있게 착지했다
+        continue;
       }
+
+      if (!passed && !landedEarly) continue;
+
       if (!verify) {
         return {
           outcome: (landedEarly && !passed) ? OUTCOME.EARLY : OUTCOME.CLEAR,
@@ -255,15 +300,20 @@
       phase = 1;
       jumpStarted = false;
       dino.ducking = false;
-      autoJump = false;
       autoDuck = false;
       if (passableOnGround(snap, target, false, cfg.marginY)) {
-        // 그냥 달려서 지나갈 수 있다 (높이 나는 새) — 착지가 늦으면 그대로 충돌로 잡힌다.
+        phase2Mode = 'run';            // 그냥 달려서 지나갈 수 있다 (높이 나는 새)
       } else if (passableOnGround(snap, target, true, cfg.marginY)) {
+        phase2Mode = 'duck';
         autoDuck = true;
         if (!dino.jumping) dino.ducking = true;
       } else {
-        autoJump = true;               // 착지 즉시 다시 뛰어야 넘을 수 있다
+        phase2Mode = 'jump';           // 뛰어야 넘는다
+        if (!dino.jumping) {
+          return canStillReact(snap, target, speed, mx)
+            ? { outcome: wasEarly ? OUTCOME.EARLY : OUTCOME.CLEAR, frames: f }
+            : { outcome: OUTCOME.CRASH, frames: f };
+        }
       }
     }
     return { outcome: wasEarly ? OUTCOME.EARLY : OUTCOME.CLEAR, frames: cfg.horizonFrames };
@@ -302,8 +352,15 @@
     if (now.outcome === OUTCOME.CLEAR) return { action: 'jump' };
     if (now.outcome === OUTCOME.EARLY) return { action: 'wait' };
 
-    // 지금 뛰면 착지 지점이 장애물과 겹친다. 아직 충돌까지 여유가 있으면
-    // 성급하게 뛰지 말고 다음 프레임에 다시 판단한다.
+    // 지금 뛰어도 부딪힌다. 앞 장애물은 늦게, 뒤 장애물은 일찍 뛰어야 해서
+    // 넘길 수 있는 순간이 좁을 때가 있으니 몇 프레임 뒤를 확인한다.
+    for (var d = 1; d <= cfg.reactionFrames; d++) {
+      if (simulate(snap, { jumpAt: d, duck: false, dropAt: null }, cfg).outcome === OUTCOME.CLEAR) {
+        return { action: 'wait' };
+      }
+    }
+
+    // 아직 충돌까지 여유가 있으면 성급하게 뛰지 말고 다음 프레임에 다시 판단한다.
     if (run.frames > cfg.reactionFrames + 2) return { action: 'wait' };
 
     // 정말 늦었다. 그래도 뛰는 편이 서 있는 것보다 낫다.
