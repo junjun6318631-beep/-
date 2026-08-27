@@ -215,3 +215,29 @@ test('게임 객체가 없으면 아무 일도 하지 않는다', () => {
   assert.doesNotThrow(() => bot.tick(0));
   globalThis.Runner = saved;
 });
+
+test('북마클릿 파일이 봇 소스와 같은 내용이다', () => {
+  const fs = require('node:fs');
+  const builder = require(path.join(__dirname, '..', 'build-bookmarklet.js'));
+  const current = fs.readFileSync(builder.OUTPUT, 'utf8');
+  assert.strictEqual(current, builder.build(),
+    'node js/build-bookmarklet.js 로 북마클릿을 다시 만들어야 합니다');
+});
+
+test('북마클릿용으로 줄인 코드도 똑같이 플레이한다', () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const builder = require(path.join(__dirname, '..', 'build-bookmarklet.js'));
+  const minified = builder.minify(fs.readFileSync(builder.SOURCE, 'utf8'));
+  const tmp = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'dino-')), 'min.js');
+  fs.writeFileSync(tmp, minified);
+  const minifiedApi = require(tmp);
+
+  const sim = new SimRunner({ seed: 2 }).install(globalThis);
+  const bot = minifiedApi.createBot({ hud: false, autoRestart: false });
+  for (let f = 0; f < 20000; f++) {
+    bot.tick(f * FRAME_MS);
+    if (!sim.step()) break;
+  }
+  assert.strictEqual(sim.crashed, false, `줄인 코드가 ${sim.frames}프레임에서 충돌`);
+});

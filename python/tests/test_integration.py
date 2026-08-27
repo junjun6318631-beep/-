@@ -159,3 +159,63 @@ class TestScreenToKeys(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipIf(np is None, "numpy 가 없어 통합 테스트를 건너뜁니다")
+class TestMainLoop(unittest.TestCase):
+    """실행 진입점(main.run)이 화면 캡처만 가짜로 바꿔도 끝까지 도는지 확인한다."""
+
+    def test_실행_루프가_게임을_찾아_플레이한다(self):
+        import unittest.mock as mock
+        from dino_bot import main as main_module
+
+        sim = SimRunner(seed=5, speed=7.0)
+        sim.playing = True
+        scale = 1.0
+        keyboards = []
+
+        def fake_grabber():
+            def grab(area=None):
+                frame = frame_of(sim, scale)
+                sim.step()                       # 캡처할 때마다 게임이 한 프레임 진행
+                if area is None:
+                    return frame
+                return frame[area["top"]:area["top"] + area["height"],
+                             area["left"]:area["left"] + area["width"]]
+            return grab, lambda: None
+
+        def fake_keyboard(dry_run=False):
+            keyboard = FakeKeyboard(sim)
+            keyboards.append(keyboard)
+            return keyboard
+
+        with mock.patch.object(main_module.vision, "make_grabber", fake_grabber), \
+             mock.patch.object(main_module, "Keyboard", fake_keyboard):
+            code = main_module.main(["--duration", "1.5", "--fps", "60"])
+
+        self.assertEqual(code, 0)
+        self.assertGreater(sim.frames, 50, "게임이 진행되어야 한다")
+        self.assertTrue(keyboards, "키보드가 만들어져야 한다")
+        self.assertGreater(keyboards[0].jumps, 0, "장애물을 만나면 뛰어야 한다")
+
+    def test_보정_모드는_인식_결과만_출력한다(self):
+        import unittest.mock as mock
+        from dino_bot import main as main_module
+
+        sim = SimRunner(seed=5)
+        sim.playing = True
+
+        def fake_grabber():
+            def grab(area=None):
+                frame = frame_of(sim, 1.0)
+                if area is None:
+                    return frame
+                return frame[area["top"]:area["top"] + area["height"],
+                             area["left"]:area["left"] + area["width"]]
+            return grab, lambda: None
+
+        with mock.patch.object(main_module.vision, "make_grabber", fake_grabber), \
+             mock.patch.object(main_module, "save_pgm", lambda *a: None):
+            code = main_module.main(["--calibrate"])
+        self.assertEqual(code, 0)
+        self.assertEqual(sim.frames, 0, "보정 모드는 게임을 건드리지 않는다")
