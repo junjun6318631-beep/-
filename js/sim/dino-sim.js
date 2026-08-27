@@ -27,7 +27,9 @@ var TREX_CONFIG = {
   GRAVITY: 0.6,
   HEIGHT: 47,
   HEIGHT_DUCK: 25,
-  INITIAL_JUMP_VELOCITY: -10,
+  // 크롬 원본(offline.js)에는 이 상수 이름에 오타가 있다. 실제 게임과 똑같이 두어야
+  // 봇이 진짜 게임에서도 값을 제대로 읽는지 확인할 수 있다.
+  INIITAL_JUMP_VELOCITY: -10,
   MAX_JUMP_HEIGHT: 30,
   MIN_JUMP_HEIGHT: 30,
   SPEED_DROP_COEFFICIENT: 3,
@@ -133,7 +135,7 @@ Trex.prototype.reset = function () {
 
 Trex.prototype.startJump = function (speed) {
   if (this.jumping) return;
-  this.jumpVelocity = this.config.INITIAL_JUMP_VELOCITY - (speed / 10);
+  this.jumpVelocity = this.config.INIITAL_JUMP_VELOCITY - (speed / 10);
   this.jumping = true;
   this.reachedMinHeight = false;
   this.speedDrop = false;

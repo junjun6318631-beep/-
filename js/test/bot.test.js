@@ -241,3 +241,28 @@ test('북마클릿용으로 줄인 코드도 똑같이 플레이한다', () => {
   }
   assert.strictEqual(sim.crashed, false, `줄인 코드가 ${sim.frames}프레임에서 충돌`);
 });
+
+test('크롬 원본의 오타 난 상수 이름(INIITAL_JUMP_VELOCITY)도 그대로 읽는다', () => {
+  const sim = new SimRunner({ seed: 1 }).install(globalThis);
+  const snap = api.snapshot(sim);
+  assert.strictEqual(snap.k.jumpVelocity, -10, '점프 속도를 읽지 못하면 예측이 전부 어긋난다');
+  assert.strictEqual(snap.k.gravity, 0.6);
+  assert.strictEqual(snap.k.groundY, 93);
+  assert.strictEqual(snap.dino.w, 44);
+
+  // 오타가 고쳐진 버전이 나와도 그대로 동작해야 한다.
+  const fixed = Object.assign({}, sim.tRex.config);
+  fixed.INITIAL_JUMP_VELOCITY = fixed.INIITAL_JUMP_VELOCITY;
+  delete fixed.INIITAL_JUMP_VELOCITY;
+  sim.tRex.config = fixed;
+  assert.strictEqual(api.snapshot(sim).k.jumpVelocity, -10);
+});
+
+test('게임에서 상수를 아예 못 읽어도 원본 값으로 판단한다', () => {
+  const sim = new SimRunner({ seed: 1 }).install(globalThis);
+  sim.tRex.config = {};                     // 구조가 바뀐 버전을 흉내
+  const snap = api.snapshot(sim);
+  assert.strictEqual(snap.k.jumpVelocity, -10);
+  assert.strictEqual(snap.dino.h, 47);
+  assert.ok(Number.isFinite(snap.k.minJumpHeight));
+});

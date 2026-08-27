@@ -385,10 +385,10 @@
     for (var i = 0; i < list.length; i++) {
       var o = list[i];
       obstacles.push({
-        x: o.xPos,
-        y: o.yPos,
-        w: o.width,
-        h: o.typeConfig.height,
+        x: num(o.xPos, 600),
+        y: num(o.yPos, 105),
+        w: num(o.width, num(o.typeConfig.width, 17)),
+        h: num(o.typeConfig.height, 35),
         type: o.typeConfig.type,
         speedOffset: o.speedOffset || 0,
         boxes: (o.collisionBoxes || []).map(toBox)
@@ -396,27 +396,42 @@
     }
     var rc = runner.config || {};
     return {
-      speed: runner.currentSpeed,
-      acceleration: rc.ACCELERATION != null ? rc.ACCELERATION : 0.001,
-      maxSpeed: rc.MAX_SPEED != null ? rc.MAX_SPEED : 13,
+      speed: num(runner.currentSpeed, 6),
+      acceleration: num(rc.ACCELERATION, 0.001),
+      maxSpeed: num(rc.MAX_SPEED, 13),
       dino: {
-        x: t.xPos, y: t.yPos, w: tc.WIDTH, h: tc.HEIGHT,
+        x: num(t.xPos, FALLBACK.trex.START_X_POS),
+        y: num(t.yPos, FALLBACK.groundYPos),
+        w: num(tc.WIDTH, FALLBACK.trex.WIDTH),
+        h: num(tc.HEIGHT, FALLBACK.trex.HEIGHT),
         jumping: t.jumping, ducking: t.ducking,
-        vel: t.jumpVelocity, speedDrop: t.speedDrop,
+        vel: num(t.jumpVelocity, 0), speedDrop: t.speedDrop,
         reachedMinHeight: t.reachedMinHeight
       },
       k: {
-        gravity: tc.GRAVITY,
-        jumpVelocity: tc.INITIAL_JUMP_VELOCITY,
-        dropVelocity: tc.DROP_VELOCITY,
-        speedDropCoefficient: tc.SPEED_DROP_COEFFICIENT,
-        maxJumpHeight: tc.MAX_JUMP_HEIGHT,
-        minJumpHeight: t.minJumpHeight != null ? t.minJumpHeight : FALLBACK.groundYPos - tc.MIN_JUMP_HEIGHT,
-        groundY: t.groundYPos != null ? t.groundYPos : FALLBACK.groundYPos
+        gravity: num(tc.GRAVITY, FALLBACK.trex.GRAVITY),
+        // 크롬 원본에는 이 상수 이름에 오타(INIITAL)가 있다. 둘 다 받아 준다.
+        jumpVelocity: num(tc.INITIAL_JUMP_VELOCITY, tc.INIITAL_JUMP_VELOCITY,
+                          FALLBACK.trex.INITIAL_JUMP_VELOCITY),
+        dropVelocity: num(tc.DROP_VELOCITY, FALLBACK.trex.DROP_VELOCITY),
+        speedDropCoefficient: num(tc.SPEED_DROP_COEFFICIENT, FALLBACK.trex.SPEED_DROP_COEFFICIENT),
+        maxJumpHeight: num(tc.MAX_JUMP_HEIGHT, FALLBACK.trex.MAX_JUMP_HEIGHT),
+        minJumpHeight: num(t.minJumpHeight,
+                           num(t.groundYPos, FALLBACK.groundYPos)
+                             - num(tc.MIN_JUMP_HEIGHT, FALLBACK.trex.MIN_JUMP_HEIGHT)),
+        groundY: num(t.groundYPos, FALLBACK.groundYPos)
       },
       boxes: boxes,
       obstacles: obstacles
     };
+  }
+
+  /** 게임에서 읽은 값이 숫자가 아니면(버전 차이·오타 키) 원본 상수로 대신한다. */
+  function num() {
+    for (var i = 0; i < arguments.length; i++) {
+      if (typeof arguments[i] === 'number' && isFinite(arguments[i])) return arguments[i];
+    }
+    return 0;
   }
 
   function toBox(b) {

@@ -3,3 +3,4 @@ __pycache__/
 *.pyc
 .venv/
 dino-bot-calibration*.pgm
+tools/.trex-cache/
