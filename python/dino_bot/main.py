@@ -20,6 +20,7 @@ from . import policy, vision
 from .keys import Keyboard
 
 FRAME_MS = 1000.0 / 60.0
+GHOST_SPEED_FACTOR = 0.92   # 안 보이는 장애물은 조금 느리게 — 오래 남겨 두는 쪽이 안전하다
 
 
 @dataclass
@@ -35,6 +36,7 @@ class DinoModel:
     def __init__(self) -> None:
         self.state = policy.DinoState()
         self._pending = 0.0
+        self.last_top: Optional[float] = None
 
     def jump(self, speed: float) -> None:
         if not self.state.jumping and not self.state.ducking:
@@ -68,7 +70,7 @@ class DinoModel:
         self.state.reached_min_height = False
 
 
-def sync_dino_from_screen(dino: DinoModel, observation) -> None:
+def sync_dino_from_screen(dino: DinoModel, observation, frames: float = 1.0) -> None:
     """화면에서 본 공룡 모습으로 내부 모델을 맞춘다.
 
     장애물이 공룡과 겹쳐 보일 때는 판단이 흐려지므로, 위쪽 끝과 발밑 두 가지가
@@ -76,18 +78,37 @@ def sync_dino_from_screen(dino: DinoModel, observation) -> None:
     """
     top = observation.dino_top
     if top is None:
+        dino.last_top = None
         return
     on_ground = observation.dino_on_ground
     if on_ground and top >= policy.GROUND_Y - 2:
         if dino.state.jumping:
             dino.sync_grounded()
         dino.state.ducking = top >= policy.GROUND_Y + 8
-    elif not on_ground and top < policy.GROUND_Y - 6:
-        if not dino.state.jumping:              # 화면은 공중인데 모델은 땅이라고 알고 있다
-            dino.state.jumping = True
-            dino.state.y = top
-            dino.state.vel = 0.0
-            dino.state.ducking = False
+        dino.last_top = top
+        return
+    if on_ground or top >= policy.GROUND_Y - 6:
+        dino.last_top = None            # 장애물이 겹쳐 보이는 등 애매한 상황
+        return
+
+    # 확실히 공중이다. 머리 쪽은 구름이 겹칠 수 있으니 발 위치에서 거꾸로 계산한다.
+    if observation.dino_bottom is not None:
+        top = observation.dino_bottom - policy.DINO_HEIGHT + 1
+    measured = None
+    if dino.last_top is not None and frames > 0:
+        measured = (top - dino.last_top) / frames
+    if not dino.state.jumping:
+        dino.state.jumping = True
+        dino.state.ducking = False
+        dino.state.speed_drop = False
+        dino.state.reached_min_height = top < policy.GROUND_Y - policy.MIN_JUMP_HEIGHT
+        dino.state.vel = 0.0 if measured is None else measured
+    elif measured is not None and abs(top - dino.state.y) > 3:
+        dino.state.vel = measured
+    if abs(top - dino.state.y) <= 30:
+        dino.state.y = top
+    dino._pending = 0.0
+    dino.last_top = top
 
 
 def apply_decision(decision, keyboard, dino: DinoModel, speed: float) -> None:
@@ -129,9 +150,41 @@ def calibrate_with_retry(grab, attempts: int = 30, wait: float = 0.2) -> vision.
     raise last if last else vision.CalibrationError("게임을 찾지 못했습니다.")
 
 
-def build_state(observation: vision.Observation, speed: float,
-                dino: policy.DinoState) -> policy.GameState:
-    return policy.GameState(speed=speed, obstacles=observation.obstacles, dino=dino)
+def build_state(obstacles, speed: float, dino: policy.DinoState) -> policy.GameState:
+    return policy.GameState(speed=speed, obstacles=obstacles, dino=dino)
+
+
+def update_hidden(state: dict, visible, speed: float, frames: float):
+    """공룡 그림에 가려 안 보이는 장애물을 계산으로 이어서 추적한다 (JS 봇과 같은 방식)."""
+    kept = []
+    for ghost in state.get("hidden", []):
+        ghost.x -= speed * GHOST_SPEED_FACTOR * frames
+        if ghost.right > policy.DINO_X - 6:
+            kept.append(ghost)
+    for prev in state.get("visible", []):
+        right = prev.right - speed * GHOST_SPEED_FACTOR * frames
+        if right < policy.DINO_X - 6:
+            continue
+        if right - prev.w > vision.SCAN_FROM:
+            continue
+        if any(abs(o.right - right) < 12 + speed and abs(o.y - prev.y) < 20 for o in visible):
+            continue
+        kept.append(policy.Obstacle(x=right - prev.w, y=prev.y, w=prev.w, h=prev.h))
+    state["hidden"] = kept
+    state["visible"] = list(visible)
+    return sorted(visible + kept, key=lambda o: o.x)
+
+
+def still_overlapping(obstacles) -> bool:
+    """날아다니는 장애물이 아직 공룡 자리를 지나는 중인가."""
+    left = policy.DINO_X - 8
+    right = policy.DINO_X + 59 + 8
+    for o in obstacles:
+        if o.bottom >= policy.GROUND_Y + policy.DINO_HEIGHT - 2:
+            continue
+        if o.x < right and o.right > left:
+            return True
+    return False
 
 
 def run(args: argparse.Namespace) -> int:
@@ -159,8 +212,9 @@ def run(args: argparse.Namespace) -> int:
             save_pgm("dino-bot-calibration.pgm", grab(region))
             print("인식한 영역을 dino-bot-calibration.pgm 으로 저장했습니다.")
             observation = vision.observe(grab(region), calib)
-            print(f"보이는 장애물 {len(observation.obstacles)}개: " + ", ".join(
-                f"x={o.x:.0f} y={o.y:.0f} {o.w:.0f}x{o.h:.0f}" for o in observation.obstacles))
+            print(f"보이는 물체 {len(observation.blobs)}개: " + ", ".join(
+                f"x={b.x:.0f}~{b.right:.0f} y={b.top:.0f}~{b.bottom:.0f}"
+                for b in observation.blobs))
             print(f"공룡 높이 y={observation.dino_top}")
             return 0
 
@@ -168,7 +222,7 @@ def run(args: argparse.Namespace) -> int:
         if args.margin is not None:
             cfg.margin = args.margin
         keyboard = Keyboard(dry_run=args.dry_run)
-        speed_est = vision.SpeedEstimator()
+        tracker = vision.BlobTracker()
         dino = DinoModel()
 
         print("자동 플레이를 시작합니다. 멈추려면 Ctrl+C.")
@@ -176,6 +230,8 @@ def run(args: argparse.Namespace) -> int:
         deaths = 0
         idle_since: Optional[float] = None
         run_started = time.perf_counter()
+        hidden_state: dict = {"hidden": [], "visible": []}
+        saw_obstacle = False
         frozen_since: Optional[float] = None
         last_positions: tuple = ()
         last_tick = time.perf_counter()
@@ -192,25 +248,28 @@ def run(args: argparse.Namespace) -> int:
             cfg.lag_frames = max(1.0, min(cfg.max_lag_frames, frames))
 
             observation = vision.observe(grab(region), calib)
-            speed = speed_est.update(observation.obstacles, now * 1000.0)
+            speed = tracker.update(observation.blobs, now * 1000.0)
 
-            # 화면이 멈춰 있으면(장애물이 있는데 움직이지 않으면) 죽은 것이다.
-            positions = tuple(round(o.x, 1) for o in observation.obstacles)
+            # 화면의 물체가 하나도 움직이지 않으면 게임이 멈춘 것이다.
+            positions = tuple(round(b.x, 1) for b in observation.blobs)
             if positions and positions == last_positions:
                 frozen_since = frozen_since or now
             else:
                 frozen_since = None
             last_positions = positions
 
-            if frozen_since and now - frozen_since > 0.6:
+            if frozen_since and now - frozen_since > 0.6 and saw_obstacle:
                 deaths += 1
+                saw_obstacle = False
                 lasted = frozen_since - run_started
                 policy.tune_margin(cfg, score=lasted, good_run_score=args.good_run)
                 print(f"죽었습니다 ({deaths}번째, {lasted:.0f}초 버팀). "
                       f"마진 {cfg.margin:.0f}px 로 조정하고 다시 시작합니다.")
                 keyboard.release_all()
                 dino.sync_grounded()
-                speed_est.reset(6.0)
+                tracker.reset(6.0)
+                hidden_state["hidden"] = []
+                hidden_state["visible"] = []
                 time.sleep(0.9)                    # 게임이 재시작을 받아 줄 때까지
                 keyboard.jump()
                 frozen_since = None
@@ -220,10 +279,14 @@ def run(args: argparse.Namespace) -> int:
                 continue
 
             dino.advance(frames)
-            sync_dino_from_screen(dino, observation)
+            sync_dino_from_screen(dino, observation, frames)
 
-            if observation.obstacles:
+            obstacles = update_hidden(hidden_state,
+                                     vision.to_obstacles(observation.blobs, speed),
+                                     speed, frames)
+            if obstacles:
                 idle_since = None
+                saw_obstacle = True
             else:
                 # 장애물이 한참 보이지 않으면 게임이 멈춰 있는 것이다 (시작 전/재시작 직후).
                 if idle_since is None:
@@ -236,13 +299,18 @@ def run(args: argparse.Namespace) -> int:
                     run_started = now
                     continue
 
-            state = build_state(observation, speed, dino.state)
+            state = build_state(obstacles, speed, dino.state)
             decision = policy.decide(state, cfg)
+            # 화면으로 잰 위치에는 오차가 있다 — 무언가 겹쳐 있는 동안에는 숙인 자세를 유지한다.
+            if (keyboard.down_held and not dino.state.jumping
+                    and decision.action not in (policy.DUCK, policy.DROP)
+                    and still_overlapping(obstacles)):
+                decision = policy.Decision(policy.DUCK)
 
             apply_decision(decision, keyboard, dino, speed)
 
             if args.debug:
-                sys.stdout.write("\r" + vision.render_ascii(observation, speed, decision.action)
+                sys.stdout.write("\r" + vision.render_ascii(obstacles, speed, decision.action)
                                  + f" margin={cfg.margin:.0f} lag={cfg.lag_frames:.1f}   ")
                 sys.stdout.flush()
 

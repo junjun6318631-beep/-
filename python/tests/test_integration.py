@@ -25,7 +25,8 @@ from sim.dino_sim import SimRunner
 
 if np is not None:
     from dino_bot import vision
-    from dino_bot.main import DinoModel, apply_decision, sync_dino_from_screen
+    from dino_bot.main import (DinoModel, apply_decision, still_overlapping,
+                                sync_dino_from_screen, update_hidden)
     from test_vision import CANVAS_LEFT, CANVAS_TOP, crop_region, render
 
 FRAME_MS = 1000.0 / 60.0
@@ -79,18 +80,25 @@ def play_through_screen(seed=1, frames=1500, scale=1.0, speed=6.0,
     cfg = policy.Config()
     dino = DinoModel()
     keyboard = FakeKeyboard(sim)
-    estimator = vision.SpeedEstimator()
+    tracker = vision.BlobTracker()
+    hidden_state = {"hidden": [], "visible": []}
     seen = {"jumped": False, "ducked": False}
 
     for f in range(frames):
         observation = vision.observe(crop_region(frame_of(sim, scale), calib), calib)
-        speed_now = estimator.update(observation.obstacles, f * FRAME_MS)
+        speed_now = tracker.update(observation.blobs, f * FRAME_MS)
+        obstacles = update_hidden(hidden_state,
+                                  vision.to_obstacles(observation.blobs, speed_now),
+                                  speed_now, 1.0)
         dino.advance(1.0)
-        sync_dino_from_screen(dino, observation)
+        sync_dino_from_screen(dino, observation, 1.0)
 
-        state = policy.GameState(speed=speed_now, obstacles=observation.obstacles,
-                                 dino=dino.state)
+        state = policy.GameState(speed=speed_now, obstacles=obstacles, dino=dino.state)
         decision = policy.decide(state, cfg)
+        if (keyboard.down_held and not dino.state.jumping
+                and decision.action not in (policy.DUCK, policy.DROP)
+                and still_overlapping(obstacles)):
+            decision = policy.Decision(policy.DUCK)
         apply_decision(decision, keyboard, dino, speed_now)
 
         if sim.trex.jumping:
@@ -99,7 +107,7 @@ def play_through_screen(seed=1, frames=1500, scale=1.0, speed=6.0,
             seen["ducked"] = True
         if not sim.step():
             break
-    return sim, seen, estimator
+    return sim, seen, tracker
 
 
 @unittest.skipIf(np is None, "numpy 가 없어 통합 테스트를 건너뜁니다")
@@ -123,9 +131,9 @@ class TestScreenToKeys(unittest.TestCase):
         # 게임은 장애물을 한 프레임에 floor(속도) 픽셀만 옮기므로, 화면으로 잰 속도는
         # 실제 값보다 최대 1 작게 나온다. 판단에 쓰는 이동량 계산도 같은 내림을 쓰니
         # 예측은 어긋나지 않는다.
-        sim, _, estimator = play_through_screen(seed=1, frames=600, scale=1.0, speed=10.0)
-        self.assertAlmostEqual(estimator.speed, sim.current_speed, delta=1.1)
-        self.assertLessEqual(estimator.speed, sim.current_speed + 0.2)
+        sim, _, tracker = play_through_screen(seed=1, frames=600, scale=1.0, speed=10.0)
+        self.assertAlmostEqual(tracker.speed, sim.current_speed, delta=1.1)
+        self.assertLessEqual(tracker.speed, sim.current_speed + 0.2)
 
     def test_가운데_높이의_새를_화면만_보고_숙여서_지나간다(self):
         def setup(sim):
